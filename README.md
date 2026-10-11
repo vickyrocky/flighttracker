@@ -19,7 +19,7 @@ Routes, dates and limits are at the top of `tracker.py`.
    - `TELEGRAM_CHAT_ID`: your numeric Telegram ID
 4. Go to **Actions > Track flight prices > Run workflow**, tick **Only send a test Telegram message**, and run it. You should get a test message.
 
-After that it runs by itself every hour.
+After that an hourly job on cron-job.org starts the workflow through the GitHub API. GitHub's own schedule never fired for this repo, so it is not used.
 
 ## How alerts behave
 

@@ -1,10 +1,8 @@
 name: Track flight prices
 
+# Started every hour from 6 AM to 11 PM IST by an external timer on
+# cron-job.org, because GitHub's own schedule never fired for this repo.
 on:
-  schedule:
-    # Hourly from 6:47 AM to 11:47 PM IST (times below are UTC). Nothing runs
-    # between 12 AM and 6 AM IST. Minute 17 avoids the top-of-hour rush.
-    - cron: "17 1-18 * * *"
   workflow_dispatch:
     inputs:
       test_notify:
