@@ -39,6 +39,7 @@ ROUTES = [
     ("BLR", "VNS", 7000),
 ]
 SEND_HOURLY_SUMMARY = True  # every run, send the lowest fare on each route
+QUIET_HOURS_IST = (0, 6)  # no checks or messages from 12 AM up to 6 AM IST
 MAX_STOPS = None  # None = any, 0 = non-stop only, 1 = at most one stop
 MAX_LINES_PER_MESSAGE = 12
 # --------------------------------------------------------------------------
@@ -199,6 +200,12 @@ def main():
     if "--test-notify" in sys.argv:
         send_telegram("✅ Flight tracker test message. Notifications are working.")
         print("Test message sent.")
+        return 0
+
+    # The schedule already skips these hours; this also covers runs GitHub
+    # starts late. A deal that appears overnight is alerted at the next run.
+    if QUIET_HOURS_IST[0] <= datetime.now(IST).hour < QUIET_HOURS_IST[1] and not dry_run:
+        print("Quiet hours. Skipping this run.")
         return 0
 
     today = datetime.now(IST).strftime("%Y-%m-%d")

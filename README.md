@@ -24,6 +24,7 @@ After that it runs by itself every hour.
 ## How alerts behave
 
 - Every hour you get a summary with the lowest fare on each route. Set `SEND_HOURLY_SUMMARY = False` in `tracker.py` to turn it off.
+- Nothing is checked or sent between 12 AM and 6 AM IST. A deal that appears overnight is alerted at the first morning run if it is still there.
 - A separate deal alert is sent when a fare is at or under its limit. You are told about a flight once, and again only if its price drops further.
 - If a fare goes back above the limit and later falls again, you are told again.
 - Searches that fail are marked in the hourly summary.
