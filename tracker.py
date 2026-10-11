@@ -1,7 +1,7 @@
 """Hourly flight price tracker: Google Flights -> Telegram alerts.
 
 Usage:
-    python tracker.py               # check prices, alert on deals
+    python tracker.py               # check prices, send summary and deal alerts
     python tracker.py --dry-run     # check prices, print only, send nothing
     python tracker.py --test-notify # send a test Telegram message and exit
 """
@@ -19,19 +19,28 @@ from fast_flights import FlightQuery, Passengers, create_query, fetch_flights_ht
 from selectolax.lexbor import LexborHTMLParser
 
 # ----------------------------- configuration -----------------------------
-ORIGIN = "BLR"
 DATES = ["2026-11-03", "2026-11-04", "2026-11-05"]
-# destination airport code -> (city name, highest price in INR worth an alert)
-DESTINATIONS = {
-    "IXR": ("Ranchi", 8000),
-    "BBI": ("Bhubaneswar", 7000),
-    "CCU": ("Kolkata", 7000),
-    "JRG": ("Jharsuguda", 7000),
-    "VNS": ("Varanasi", 7000),
+CITIES = {
+    "BLR": "Bangalore",
+    "MAA": "Chennai",
+    "IXR": "Ranchi",
+    "BBI": "Bhubaneswar",
+    "CCU": "Kolkata",
+    "JRG": "Jharsuguda",
+    "VNS": "Varanasi",
 }
+# (origin, destination, highest price in INR worth an alert)
+ROUTES = [
+    ("BLR", "IXR", 8000),
+    ("MAA", "IXR", 8000),
+    ("BLR", "BBI", 7000),
+    ("BLR", "CCU", 7000),
+    ("BLR", "JRG", 7000),
+    ("BLR", "VNS", 7000),
+]
+SEND_HOURLY_SUMMARY = True  # every run, send the lowest fare on each route
 MAX_STOPS = None  # None = any, 0 = non-stop only, 1 = at most one stop
 MAX_LINES_PER_MESSAGE = 12
-FAILED_RUNS_BEFORE_WARNING = 3
 # --------------------------------------------------------------------------
 
 ROOT = Path(__file__).parent
@@ -90,9 +99,9 @@ def parse(html):
     return results
 
 
-def search(dest, date):
+def search(origin, dest, date):
     query = create_query(
-        flights=[FlightQuery(date=date, from_airport=ORIGIN, to_airport=dest)],
+        flights=[FlightQuery(date=date, from_airport=origin, to_airport=dest)],
         trip="one-way",
         seat="economy",
         passengers=Passengers(adults=1),
@@ -129,20 +138,58 @@ def send_telegram(text):
             raise RuntimeError("Telegram rejected the message")
 
 
-def describe(deal):
-    f = deal["flight"]
+def short_day(date):
+    return datetime.strptime(date, "%Y-%m-%d").strftime("%a %d %b")
+
+
+def flight_line(f):
     stops = "non-stop" if f["stops"] == 0 else f"{f['stops']} stop via {'/'.join(f['via'])}"
-    day = datetime.strptime(deal["date"], "%Y-%m-%d").strftime("%a %d %b")
     arrive = f["arrive"] + (" (+1 day)" if f["next_day"] else "")
     hours, minutes = divmod(f["minutes"] or 0, 60)
+    return (f"{f['airlines']} {f['flight_no']}, {f['depart']} to {arrive}, "
+            f"{hours}h {minutes:02d}m, {stops}")
+
+
+def html_link(url, label):
+    return f'<a href="{url.replace("&", "&amp;")}">{label}</a>'
+
+
+def describe(deal):
+    f = deal["flight"]
     was = f" (was ₹{deal['previous']:,})" if deal["previous"] else ""
-    link = deal["url"].replace("&", "&amp;")
     return (
-        f"<b>₹{f['price']:,}</b>{was} to <b>{deal['city']}</b>, {day}\n"
-        f"{f['airlines']} {f['flight_no']}, {f['depart']} to {arrive}, "
-        f"{hours}h {minutes:02d}m, {stops}\n"
-        f'<a href="{link}">Open in Google Flights</a>'
+        f"<b>₹{f['price']:,}</b>{was} {deal['route']}, {short_day(deal['date'])}\n"
+        f"{flight_line(f)}\n"
+        f"{html_link(deal['url'], 'Open in Google Flights')}"
     )
+
+
+def summarize(route_results):
+    """One block per route: the lowest fare, plus the low for each other date."""
+    blocks = []
+    for origin, dest, limit in ROUTES:
+        by_date = route_results[(origin, dest)]
+        priced = {d: r for d, r in by_date.items() if isinstance(r, tuple)}
+        failed = [d for d, r in by_date.items() if r == "failed"]
+        lines = [f"<b>{CITIES[origin]} to {CITIES[dest]}</b> (limit ₹{limit:,})"]
+        if priced:
+            best_date = min(priced, key=lambda d: priced[d][0]["price"])
+            f, url = priced[best_date]
+            mark = "✅ " if f["price"] <= limit else ""
+            price = html_link(url, f"₹{f['price']:,}")
+            lines.append(f"{mark}{price} on {short_day(best_date)}")
+            lines.append(flight_line(f))
+            others = [f"{short_day(d)[4:]} ₹{r[0]['price']:,}"
+                      for d, r in priced.items() if d != best_date]
+            if others:
+                lines.append("Other dates: " + ", ".join(others))
+        elif not failed:
+            lines.append("No flights listed")
+        if failed:
+            lines.append("⚠️ Could not read: " + ", ".join(short_day(d)[4:] for d in failed))
+        blocks.append("\n".join(lines))
+    now = datetime.now(IST).strftime("%d %b, %I:%M %p")
+    return f"📊 <b>Lowest fares</b> as of {now}\n\n" + "\n\n".join(blocks)
 
 
 def main():
@@ -160,33 +207,40 @@ def main():
         print("All travel dates have passed. Nothing to check.")
         return 0
 
-    state = {"alerted": {}, "failed_runs": 0}
+    state = {"alerted": {}}
     if STATE_FILE.exists():
-        state.update(json.loads(STATE_FILE.read_text(encoding="utf-8")))
+        saved = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state["alerted"] = saved.get("alerted", {})
     alerted = state["alerted"]
 
     deals, errors, failed_routes, seen_keys, total = [], [], set(), set(), 0
-    for dest, (city, limit) in DESTINATIONS.items():
+    route_results = {}  # (origin, dest) -> {date: (cheapest flight, url) | "none" | "failed"}
+    for origin, dest, limit in ROUTES:
+        route = f"{CITIES[origin]} to {CITIES[dest]}"
+        by_date = route_results[(origin, dest)] = {}
         for date in dates:
             total += 1
+            label = f"{origin}-{dest} {date}"
             try:
-                flights, url = search(dest, date)
+                flights, url = search(origin, dest, date)
             except Exception as error:
-                errors.append(f"{dest} {date}: {type(error).__name__}: {error}")
-                failed_routes.add(f"{dest}|{date}")
-                print(f"{dest} {date}: FAILED {type(error).__name__}: {error}")
+                errors.append(f"{label}: {type(error).__name__}: {error}")
+                failed_routes.add(f"{origin}-{dest}|{date}")
+                by_date[date] = "failed"
+                print(f"{label}: FAILED {type(error).__name__}: {error}")
                 continue
-            cheapest = min((f["price"] for f in flights), default=None)
-            shown = "none" if cheapest is None else f"₹{cheapest:,}"
-            print(f"{dest} {date}: {len(flights)} priced flights, cheapest {shown} (limit ₹{limit:,})")
+            cheapest = min(flights, key=lambda f: f["price"], default=None)
+            by_date[date] = (cheapest, url) if cheapest else "none"
+            shown = f"₹{cheapest['price']:,}" if cheapest else "none"
+            print(f"{label}: {len(flights)} priced flights, cheapest {shown} (limit ₹{limit:,})")
             for f in flights:
                 if f["price"] > limit:
                     continue
-                key = f"{dest}|{date}|{f['flight_no']}"
+                key = f"{origin}-{dest}|{date}|{f['flight_no']}"
                 seen_keys.add(key)
                 previous = alerted.get(key)
                 if previous is None or f["price"] < previous:
-                    deals.append({"key": key, "city": city, "date": date, "url": url,
+                    deals.append({"key": key, "route": route, "date": date, "url": url,
                                   "flight": f, "previous": previous})
             time.sleep(2)  # be gentle with Google
 
@@ -199,7 +253,7 @@ def main():
     deals.sort(key=lambda d: d["flight"]["price"])
     if deals:
         shown = deals[:MAX_LINES_PER_MESSAGE]
-        text = "✈️ <b>Flight deals from Bangalore</b>\n\n" + "\n\n".join(map(describe, shown))
+        text = "✈️ <b>Flight deals under your limits</b>\n\n" + "\n\n".join(map(describe, shown))
         if len(deals) > len(shown):
             text += f"\n\n...and {len(deals) - len(shown)} more under your limits."
         print(f"{len(deals)} new deal(s) found.")
@@ -212,19 +266,19 @@ def main():
     else:
         print("No new deals under the limits.")
 
-    all_failed = len(errors) == total
-    state["failed_runs"] = state["failed_runs"] + 1 if all_failed else 0
-    if errors:
-        print(f"{len(errors)} of {total} searches failed this run.")
-    if all_failed and state["failed_runs"] == FAILED_RUNS_BEFORE_WARNING and not dry_run:
-        send_telegram(
-            "⚠️ Flight tracker could not read prices for "
-            f"{FAILED_RUNS_BEFORE_WARNING} runs in a row.\nLast error: {errors[0][:300]}"
-        )
-
     if not dry_run:
         STATE_FILE.write_text(json.dumps(state, indent=1), encoding="utf-8")
-    return 1 if all_failed else 0
+
+    if SEND_HOURLY_SUMMARY:
+        summary = summarize(route_results)
+        if dry_run:
+            print(summary)
+        else:
+            send_telegram(summary)
+
+    if errors:
+        print(f"{len(errors)} of {total} searches failed this run.")
+    return 1 if len(errors) == total else 0
 
 
 if __name__ == "__main__":

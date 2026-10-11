@@ -1,11 +1,12 @@
 # Flight tracker
 
-Checks Google Flights every hour for one-way fares from Bangalore on 3, 4 and 5 November 2026 and sends a Telegram message when a fare is at or under the limit.
+Checks Google Flights every hour for one-way fares on 3, 4 and 5 November 2026 and reports to Telegram.
 
-| Destination | Limit |
+| Route | Limit |
 |---|---|
-| Ranchi (IXR) | ₹8,000 |
-| Bhubaneswar (BBI), Kolkata (CCU), Jharsuguda (JRG), Varanasi (VNS) | ₹7,000 |
+| Bangalore to Ranchi (IXR) | ₹8,000 |
+| Chennai to Ranchi (IXR) | ₹8,000 |
+| Bangalore to Bhubaneswar (BBI), Kolkata (CCU), Jharsuguda (JRG), Varanasi (VNS) | ₹7,000 |
 
 Routes, dates and limits are at the top of `tracker.py`.
 
@@ -22,9 +23,10 @@ After that it runs by itself every hour.
 
 ## How alerts behave
 
-- You are told about a flight once, and again only if its price drops further.
+- Every hour you get a summary with the lowest fare on each route. Set `SEND_HOURLY_SUMMARY = False` in `tracker.py` to turn it off.
+- A separate deal alert is sent when a fare is at or under its limit. You are told about a flight once, and again only if its price drops further.
 - If a fare goes back above the limit and later falls again, you are told again.
-- If prices cannot be read three runs in a row, you get a warning message.
+- Searches that fail are marked in the hourly summary.
 - Prices are Google Flights fares for one adult in economy. The final price on the airline site can differ slightly.
 
 ## Run on your own PC
