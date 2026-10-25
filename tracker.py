@@ -19,7 +19,7 @@ from fast_flights import FlightQuery, Passengers, create_query, fetch_flights_ht
 from selectolax.lexbor import LexborHTMLParser
 
 # ----------------------------- configuration -----------------------------
-DATES = ["2026-11-03", "2026-11-04", "2026-11-05"]
+DATES = [f"2026-11-{day}" for day in range(12, 23)]  # 12 to 22 November
 CITIES = {
     "BLR": "Bangalore",
     "MAA": "Chennai",
@@ -30,13 +30,13 @@ CITIES = {
     "VNS": "Varanasi",
 }
 # (origin, destination, highest price in INR worth an alert)
-ROUTES = [
-    ("BLR", "IXR", 8000),
-    ("MAA", "IXR", 8000),
-    ("BLR", "BBI", 7000),
-    ("BLR", "CCU", 7000),
-    ("BLR", "JRG", 7000),
-    ("BLR", "VNS", 7000),
+ROUTES = [  # return journey
+    ("IXR", "BLR", 8000),
+    ("IXR", "MAA", 8000),
+    ("BBI", "BLR", 7000),
+    ("CCU", "BLR", 7000),
+    ("JRG", "BLR", 7000),
+    ("VNS", "BLR", 7000),
 ]
 SEND_HOURLY_SUMMARY = True  # every run, send the lowest fare on each route
 QUIET_HOURS_IST = (0, 6)  # no checks or messages from 12 AM up to 6 AM IST
@@ -129,7 +129,20 @@ def search(origin, dest, date):
     raise last_error
 
 
-def send_telegram(text):
+def send_telegram(text, limit=4000):
+    """Send text, split at blank lines if it exceeds Telegram's 4,096 limit."""
+    chunk = ""
+    for block in text.split("\n\n"):
+        if chunk and len(chunk) + len(block) + 2 > limit:
+            send_telegram_message(chunk)
+            chunk = block
+        else:
+            chunk = f"{chunk}\n\n{block}" if chunk else block
+    if chunk:
+        send_telegram_message(chunk)
+
+
+def send_telegram_message(text):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:

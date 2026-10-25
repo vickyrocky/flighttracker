@@ -1,12 +1,12 @@
 # Flight tracker
 
-Checks Google Flights every hour for one-way fares on 3, 4 and 5 November 2026 and reports to Telegram.
+Checks Google Flights every hour for one-way return fares from 12 to 22 November 2026 and reports to Telegram.
 
 | Route | Limit |
 |---|---|
-| Bangalore to Ranchi (IXR) | ₹8,000 |
-| Chennai to Ranchi (IXR) | ₹8,000 |
-| Bangalore to Bhubaneswar (BBI), Kolkata (CCU), Jharsuguda (JRG), Varanasi (VNS) | ₹7,000 |
+| Ranchi (IXR) to Bangalore | ₹8,000 |
+| Ranchi (IXR) to Chennai | ₹8,000 |
+| Bhubaneswar (BBI), Kolkata (CCU), Jharsuguda (JRG), Varanasi (VNS) to Bangalore | ₹7,000 |
 
 Routes, dates and limits are at the top of `tracker.py`.
 
