@@ -97,7 +97,15 @@ def parse(html):
                 )
             except (IndexError, TypeError, KeyError):
                 continue  # one malformed entry must not sink the whole route
-    return results
+
+    # The "Cheapest from ₹X" figure on Google's Cheapest tab. It can be lower
+    # than every listed flight, because Google loads that fare only when the
+    # Cheapest tab is opened, so its flight details are not on this page.
+    try:
+        cheapest_tab = int(payload[30][0][1])
+    except (IndexError, TypeError, ValueError):
+        cheapest_tab = None
+    return results, cheapest_tab
 
 
 def search(origin, dest, date):
@@ -113,7 +121,8 @@ def search(origin, dest, date):
     last_error = None
     for attempt in range(3):
         try:
-            return parse(fetch_flights_html(query)), query.url()
+            flights, cheapest_tab = parse(fetch_flights_html(query))
+            return flights, cheapest_tab, query.url()
         except Exception as error:  # network hiccup, block page, bad JSON
             last_error = error
             time.sleep(5 * (attempt + 1))
@@ -155,14 +164,25 @@ def html_link(url, label):
     return f'<a href="{url.replace("&", "&amp;")}">{label}</a>'
 
 
+CHEAPEST_TAB_NOTE = "Open the Cheapest tab on Google Flights to see this flight"
+
+
 def describe(deal):
     f = deal["flight"]
     was = f" (was ₹{deal['previous']:,})" if deal["previous"] else ""
+    details = flight_line(f) if f else CHEAPEST_TAB_NOTE
     return (
-        f"<b>₹{f['price']:,}</b>{was} {deal['route']}, {short_day(deal['date'])}\n"
-        f"{flight_line(f)}\n"
+        f"<b>₹{deal['price']:,}</b>{was} {deal['route']}, {short_day(deal['date'])}\n"
+        f"{details}\n"
         f"{html_link(deal['url'], 'Open in Google Flights')}"
     )
+
+
+def lowest(result):
+    """Lowest known fare for one date: a listed flight or the Cheapest tab."""
+    flight, _, cheapest_tab = result
+    prices = [p for p in (flight and flight["price"], cheapest_tab) if p]
+    return min(prices)
 
 
 def summarize(route_results):
@@ -174,13 +194,18 @@ def summarize(route_results):
         failed = [d for d, r in by_date.items() if r == "failed"]
         lines = [f"<b>{CITIES[origin]} to {CITIES[dest]}</b> (limit ₹{limit:,})"]
         if priced:
-            best_date = min(priced, key=lambda d: priced[d][0]["price"])
-            f, url = priced[best_date]
-            mark = "✅ " if f["price"] <= limit else ""
-            price = html_link(url, f"₹{f['price']:,}")
-            lines.append(f"{mark}{price} on {short_day(best_date)}")
-            lines.append(flight_line(f))
-            others = [f"{short_day(d)[4:]} ₹{r[0]['price']:,}"
+            best_date = min(priced, key=lambda d: lowest(priced[d]))
+            f, url, cheapest_tab = priced[best_date]
+            low = lowest(priced[best_date])
+            mark = "✅ " if low <= limit else ""
+            lines.append(f"{mark}{html_link(url, f'₹{low:,}')} on {short_day(best_date)}")
+            if f and f["price"] == low:
+                lines.append(flight_line(f))
+            else:
+                lines.append(CHEAPEST_TAB_NOTE)
+                if f:
+                    lines.append(f"Cheapest listed: ₹{f['price']:,}, {flight_line(f)}")
+            others = [f"{short_day(d)[4:]} ₹{lowest(r):,}"
                       for d, r in priced.items() if d != best_date]
             if others:
                 lines.append("Other dates: " + ", ".join(others))
@@ -221,7 +246,8 @@ def main():
     alerted = state["alerted"]
 
     deals, errors, failed_routes, seen_keys, total = [], [], set(), set(), 0
-    route_results = {}  # (origin, dest) -> {date: (cheapest flight, url) | "none" | "failed"}
+    # (origin, dest) -> {date: (cheapest listed flight, url, cheapest tab) | "none" | "failed"}
+    route_results = {}
     for origin, dest, limit in ROUTES:
         route = f"{CITIES[origin]} to {CITIES[dest]}"
         by_date = route_results[(origin, dest)] = {}
@@ -229,7 +255,7 @@ def main():
             total += 1
             label = f"{origin}-{dest} {date}"
             try:
-                flights, url = search(origin, dest, date)
+                flights, cheapest_tab, url = search(origin, dest, date)
             except Exception as error:
                 errors.append(f"{label}: {type(error).__name__}: {error}")
                 failed_routes.add(f"{origin}-{dest}|{date}")
@@ -237,18 +263,25 @@ def main():
                 print(f"{label}: FAILED {type(error).__name__}: {error}")
                 continue
             cheapest = min(flights, key=lambda f: f["price"], default=None)
-            by_date[date] = (cheapest, url) if cheapest else "none"
+            known = cheapest or cheapest_tab
+            by_date[date] = (cheapest, url, cheapest_tab) if known else "none"
             shown = f"₹{cheapest['price']:,}" if cheapest else "none"
-            print(f"{label}: {len(flights)} priced flights, cheapest {shown} (limit ₹{limit:,})")
-            for f in flights:
-                if f["price"] > limit:
+            tab = f", Cheapest tab ₹{cheapest_tab:,}" if cheapest_tab else ""
+            print(f"{label}: {len(flights)} priced flights, cheapest {shown}{tab} (limit ₹{limit:,})")
+
+            candidates = [(f"{origin}-{dest}|{date}|{f['flight_no']}", f["price"], f)
+                          for f in flights]
+            # Alert on the Cheapest tab fare only when it beats every listed flight.
+            if cheapest_tab and (not cheapest or cheapest_tab < cheapest["price"]):
+                candidates.append((f"{origin}-{dest}|{date}|cheapest-tab", cheapest_tab, None))
+            for key, price, f in candidates:
+                if price > limit:
                     continue
-                key = f"{origin}-{dest}|{date}|{f['flight_no']}"
                 seen_keys.add(key)
                 previous = alerted.get(key)
-                if previous is None or f["price"] < previous:
+                if previous is None or price < previous:
                     deals.append({"key": key, "route": route, "date": date, "url": url,
-                                  "flight": f, "previous": previous})
+                                  "price": price, "flight": f, "previous": previous})
             time.sleep(2)  # be gentle with Google
 
     # Forget deals that are gone or back above the limit, so a later drop
@@ -257,7 +290,7 @@ def main():
         if key not in seen_keys and key.rsplit("|", 1)[0] not in failed_routes:
             del alerted[key]
 
-    deals.sort(key=lambda d: d["flight"]["price"])
+    deals.sort(key=lambda d: d["price"])
     if deals:
         shown = deals[:MAX_LINES_PER_MESSAGE]
         text = "✈️ <b>Flight deals under your limits</b>\n\n" + "\n\n".join(map(describe, shown))
@@ -269,7 +302,7 @@ def main():
         else:
             send_telegram(text)
             for deal in deals:  # only remember deals once the alert went out
-                alerted[deal["key"]] = deal["flight"]["price"]
+                alerted[deal["key"]] = deal["price"]
     else:
         print("No new deals under the limits.")
 

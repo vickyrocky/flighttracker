@@ -27,6 +27,7 @@ After that an hourly job on cron-job.org starts the workflow through the GitHub 
 - Nothing is checked or sent between 12 AM and 6 AM IST. A deal that appears overnight is alerted at the first morning run if it is still there.
 - A separate deal alert is sent when a fare is at or under its limit. You are told about a flight once, and again only if its price drops further.
 - If a fare goes back above the limit and later falls again, you are told again.
+- Google's Cheapest tab sometimes shows a lower "Cheapest from" fare than any listed flight, because that fare only loads when the tab is opened. The tracker reads that figure too and alerts on it, but it cannot see that flight's details. Such alerts say to open the Cheapest tab.
 - Searches that fail are marked in the hourly summary.
 - Prices are Google Flights fares for one adult in economy. The final price on the airline site can differ slightly.
 
